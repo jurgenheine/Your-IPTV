@@ -1,15 +1,15 @@
 const axios = require('axios').default;
+const { handleChannelRequest, getEpgInfoBatch } = require('./tvGuide');
+
 axios.defaults.headers.get["content-type"] = "application/json";
 axios.defaults.timeout = 60000
 axios.defaults.method = "GET"
 
 function getUserData(userConf) {
-
     let retrievedData, url, obj = {}
     try {
         retrievedData = JSON.parse(Buffer.from(userConf, 'base64').toString())      
     } catch (error) {
-        console.log(error)
         return "error while parsing url"
     }
     
@@ -55,10 +55,10 @@ function getUserData(userConf) {
     if(obj.username && obj.password && obj.baseURL){
         return obj
     }else{
-        console.log("Error while parsing!")
         return {}
     }
 }
+
 async function getManifest(url) {
     const obj = getUserData(url)
 
@@ -66,23 +66,22 @@ async function getManifest(url) {
     try {
         vod = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_vod_categories`})
     } catch (error) {
-        console.log(error)
         return {error}
     }
     const vodJSON = vod.data
 
     let movieCatalog = []
-        if (vod.status === 200){    
+    if (vod.status === 200){    
         vodJSON.forEach(i => {
             let name = i.category_name
             movieCatalog.push(name)
         });
     }
+    
     let series
     try {
         series = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_series_categories`})
     } catch (error) {
-        console.log(error)
         return {error}
     }
     const seriesJSON = series.data
@@ -94,11 +93,11 @@ async function getManifest(url) {
             seriesCatalog.push(name)
         });
     }
-let live
+
+    let live
     try {
         live = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_live_categories`})
     } catch (error) {
-        console.log(error)
         return {error}
     }
     const liveJSON = live.data
@@ -110,13 +109,13 @@ let live
             liveCatalog.push(name)
         });
     }
+    
     const manifest = {
         id:`org.community.${obj.domainName}` || "org.community.youriptv",
         version:"1.0.0",
         name:obj.domainName + " IPTV" || "Your IPTV",
         description:`You will access to your ${obj.domainName} IPTV with this addon!`,
         idPrefixes:[obj.idPrefix],
-        //idPrefixes:["tmdb:", obj.idPrefix],
         catalogs:[
             {
                 id:`${obj.idPrefix}movie`,
@@ -137,16 +136,18 @@ let live
                 name: obj.domainName || "Your IPTV",
                 type:"tv",
                 extra:[{name:"genre",options:liveCatalog,isRequired:true}],
-                
             }
         ],
         resources:["catalog","meta","stream"],
         types:["movie","series","tv"],
-        behaviorHints:{configurable : true, configurationRequired: false },
+        behaviorHints:{
+            configurable: true,
+            configurationRequired: false,
+            epgSupported: true
+        },
     }
 
     return manifest
-    
 }
 
 function getValidUrl(url) {
@@ -157,25 +158,22 @@ function getValidUrl(url) {
         return '';
     }
 }
-
 async function getCatalog(url,type,genre) {
-
     const obj = getUserData(url)
 
-   let getCategoryID
+    let getCategoryID
 
     try { 
         if(type === "movie"){
-        getCategoryID = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_vod_categories`})    
+            getCategoryID = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_vod_categories`})    
         } 
         else if(type ==="series"){
-        getCategoryID = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_series_categories`})    
+            getCategoryID = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_series_categories`})    
         } 
         else if(type ==="tv"){
             getCategoryID = await axios({url:`${obj.baseURL}/player_api.php?username=${obj.username}&password=${obj.password}&action=get_live_categories`})    
         }
     }catch (error) {
-        console.log(error)
         return []
     }
    
@@ -186,7 +184,6 @@ async function getCatalog(url,type,genre) {
             catID = i.category_id
         }
     });
-    // console.log(catID)
 
     let action = type === "movie" ? "get_vod_streams" : type === "series" ? "get_series": type ==="tv" ? "get_live_streams" : "error"
 
@@ -201,42 +198,77 @@ async function getCatalog(url,type,genre) {
     try {
         getCatalogs = await axios({url:`${obj.baseURL}/player_api.php`,method:"GET",params:paramsCat})
     } catch (error) {
-        console.log(error)
-        // return [{error,errorLocation:"Could not use the parameters wile searching catalogs!"}]
         return []
     }
 
     let metas = []
 
-    getCatalogs.data.forEach(i => {
-        let id,name = i.name, poster, posterShape, imdbRating
-
-        if(type === "series"){
-            id = obj.idPrefix + i.series_id || ""
-            poster = getValidUrl(i.cover)
-            imdbRating = i.rating || ""
-            posterShape = "poster"
-        }else if(type === "movie"){
-            id = obj.idPrefix + i.stream_id || ""
-            poster = getValidUrl(i.stream_icon)
-            imdbRating = i.rating || ""
-            posterShape = "poster"
-        }else if (type === "tv"){
-            id = obj.idPrefix + i.stream_id || ""
-            poster = getValidUrl(i.stream_icon)
-            imdbRating = null
-            posterShape = "square"
+    if (type === "tv") {
+        const channelIds = getCatalogs.data
+            .filter(i => i.epg_channel_id)
+            .map(i => ({
+                stream_id: i.stream_id,
+                epg_channel_id: i.epg_channel_id
+            }));
+        let epgInfo;
+        try {
+            epgInfo = await getEpgInfoBatch(channelIds, obj.baseURL, obj.username, obj.password);
+        } catch (error) {
+            // Error handling
         }
 
-        metas.push({id,type,name,poster,posterShape,imdbRating})
-    }); 
+        getCatalogs.data.forEach(i => {
+            let id = obj.idPrefix + i.stream_id || "";
+            let name = i.name;
+            let poster = getValidUrl(i.stream_icon);
+            let posterShape = "square";
+
+            let meta = { id, type, name, poster, posterShape };
+
+            if (epgInfo && epgInfo[i.stream_id]) {
+                const currentProgram = epgInfo[i.stream_id].currentProgram;
+                const nextProgram = epgInfo[i.stream_id].nextProgram;
+
+                let description = '';
+                if (currentProgram) {
+                    description += `Now: ${currentProgram.title}\n${currentProgram.start} - ${currentProgram.stop}\n`;
+                }
+                if (nextProgram) {
+                    description += `\nNext: ${nextProgram.title}\n${nextProgram.start} - ${nextProgram.stop}`;
+                }
+
+                meta.description = description;
+            } else {
+                meta.description = "No program information available";
+            }
+
+            metas.push(meta);
+        });
+    } else {
+        getCatalogs.data.forEach(i => {
+            let id, name = i.name, poster, posterShape, imdbRating
+
+            if(type === "series"){
+                id = obj.idPrefix + i.series_id || ""
+                poster = getValidUrl(i.cover)
+                imdbRating = i.rating || ""
+                posterShape = "poster"
+            }else if(type === "movie"){
+                id = obj.idPrefix + i.stream_id || ""
+                poster = getValidUrl(i.stream_icon)
+                imdbRating = i.rating || ""
+                posterShape = "poster"
+            }
+
+            metas.push({id,type,name,poster,posterShape,imdbRating})
+        });
+    }
 
     return metas
 }   
+
 async function getMeta(url,type,id) {
-
     const streamID = id.split(":")[1]
-
     const obj = getUserData(url)
 
     let action = type === "movie" ? "get_vod_info" : type === "series" ? "get_series_info": type ==="tv" ? "get_live_streams" : "error"
@@ -252,26 +284,20 @@ async function getMeta(url,type,id) {
     if(type === "tv"){
         delete params[requestID]
     }
-    // console.log(params)
 
     let getMeta
 
     try {
         getMeta = await axios({url:`${obj.baseURL}/player_api.php`,params})
     } catch (error) {
-        console.log(error)
         return {}
-        // return [{error,errorLocation:"Could not use the parameters wile searching meta!"}]
     }
-
-    // console.log(getMeta.data)
 
     let meta = {}
 
     if(type === "movie"|| type === "series"){
         meta ={
-             id: obj.idPrefix + streamID || "",
-             //id: getMeta.data.info.tmdb_id === undefined ? obj.idPrefix + streamID : "tmdb:"+getMeta.data.info.tmdb_id, // "tmdb:"+getMeta.data.info.tmdb_id || obj.idPrefix + streamID || "",
+            id: obj.idPrefix + streamID || "",
             type,
             name: getMeta.data.info.name === undefined ? "" : getMeta.data.info.name,
             poster: getMeta.data.info.cover_big || "",
@@ -287,7 +313,6 @@ async function getMeta(url,type,id) {
         const seasons = Object.keys(getMeta.data.episodes)
 
         seasons.forEach(season => {
-            // console.log(season)
             getMeta.data.episodes[season].forEach(episode => {
                 let id = obj.idPrefix + episode.id || ""
                 let title = episode.title || ""
@@ -304,44 +329,80 @@ async function getMeta(url,type,id) {
                     url: `${obj.baseURL}/series/${obj.username}/${obj.password}/${episode.id}.${container_extension}`,
                 }]
 
-                // console.log(streams)
                 videos.push({id,title,season,episode:episodeNo,overview,thumbnail,released,streams})
             });
         });
 
-        // console.log(videos)
         meta.name = getMeta.data.info.name || "",
         meta.videos = videos
 
     }else if(type === "movie"){
-
         let imdbRating = getMeta.data.info.rating || ""
         meta.imdbRating = imdbRating
         
     }else if(type === "tv"){
+        let metaTV = [];
+        const channelInfo = getMeta.data.find(i => Number(i.stream_id) === Number(streamID));
 
-        let metaTV = []
-        getMeta.data.forEach(i => {
-            
-            if(Number(i.stream_id) === Number(streamID)){
+        if (channelInfo) {
+            let id = obj.idPrefix + channelInfo.stream_id;
+            let name = channelInfo.name || "";
+            let background = "https://www.stremio.com/website/wallpapers/stremio-wallpaper-5.jpg";
+            let logo = channelInfo.stream_icon || null;
 
-                let id= obj.idPrefix + i.stream_id
+            try {
+                const epgInfo = await handleChannelRequest(channelInfo.epg_channel_id, obj.baseURL, obj.username, obj.password);
                 
-                let name = i.name || ""
-                let background=  "https://www.stremio.com/website/wallpapers/stremio-wallpaper-5.jpg"//i.stream_icon,
-                let logo =  i.stream_icon || null
+                if (epgInfo && epgInfo.currentProgram) {
+                    let description = `Now: ${epgInfo.currentProgram.title}\n${epgInfo.currentProgram.start} - ${epgInfo.currentProgram.stop}\n${epgInfo.currentProgram.description || ''}\n\n`;
+                    
+                    if (epgInfo.nextProgram) {
+                        description += `Next: ${epgInfo.nextProgram.title}\n${epgInfo.nextProgram.start} - ${epgInfo.nextProgram.stop}\n${epgInfo.nextProgram.description || ''}`;
+                    }
 
-                metaTV.push({id,name,type,background,logo})
-                // console.log(metaTV)
+                    metaTV.push({
+                        id,
+                        name,
+                        type,
+                        background,
+                        logo,
+                        poster: logo,
+                        posterShape: "square",
+                        description: description,
+                        genres: ["Live TV"]
+                    });
+                } else {
+                    metaTV.push({ 
+                        id, 
+                        name, 
+                        type, 
+                        background, 
+                        logo, 
+                        poster: logo,
+                        posterShape: "square",
+                        description: "No program information available",
+                        genres: ["Live TV"] 
+                    });
+                }
+            } catch (error) {
+                metaTV.push({ 
+                    id, 
+                    name, 
+                    type, 
+                    background, 
+                    logo, 
+                    poster: logo,
+                    posterShape: "square",
+                    description: "Error fetching program information",
+                    genres: ["Live TV"] 
+                });
             }
-        });
-        // return metaTV
-        // console.log(metaTV)
-        return metaTV[0]
-    }
+        }
 
-    // console.log(meta)
+        return metaTV[0];
+    }
 
     return meta
 }
+
 module.exports={getUserData,getManifest,getCatalog,getMeta}
