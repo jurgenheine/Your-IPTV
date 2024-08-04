@@ -6,7 +6,7 @@ const MANIFEST = require('./manifest');
 const { getManifest, getCatalog, getMeta, getUserData } = require("./addon");
 
 const NodeCache = require( "node-cache" );
-const myCache = new NodeCache({stdTTL:15*60});
+const myCache = new NodeCache({stdTTL:200});
 
 var respond = function (res, data) {
     res.setHeader('Access-Control-Allow-Origin', '*');
