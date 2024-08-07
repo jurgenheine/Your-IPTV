@@ -24,8 +24,9 @@ function getUserData(userConf) {
             baseURL,
             domainName,
             idPrefix,
-            username:retrievedData.username,
-            password:retrievedData.password
+            username: retrievedData.username,
+            password: retrievedData.password,
+            timezone: retrievedData.timezone || 'UTC'
         }
 
     }else if(retrievedData.includes("http")){
@@ -50,6 +51,8 @@ function getUserData(userConf) {
         for(const entry of entries) {
             obj[entry[0]] = entry[1]
         }
+        
+        obj.timezone = obj.timezone || 'UTC';
     }
 
     if(obj.username && obj.password && obj.baseURL){
@@ -158,6 +161,7 @@ function getValidUrl(url) {
         return '';
     }
 }
+
 async function getCatalog(url,type,genre) {
     const obj = getUserData(url)
 
@@ -212,7 +216,7 @@ async function getCatalog(url,type,genre) {
             }));
         let epgInfo;
         try {
-            epgInfo = await getEpgInfoBatch(channelIds, obj.baseURL, obj.username, obj.password);
+            epgInfo = await getEpgInfoBatch(channelIds, obj.baseURL, obj.username, obj.password, obj.timezone);
         } catch (error) {
             // Error handling
         }
@@ -231,10 +235,10 @@ async function getCatalog(url,type,genre) {
 
                 let description = '';
                 if (currentProgram) {
-                    description += `Now: ${currentProgram.title}\n${currentProgram.start} - ${currentProgram.stop}\n`;
+                    description += `Now: ${currentProgram.title}\n${currentProgram.start} - ${currentProgram.description}\n`;
                 }
                 if (nextProgram) {
-                    description += `\nNext: ${nextProgram.title}\n${nextProgram.start} - ${nextProgram.stop}`;
+                    description += `\nNext: ${nextProgram.title}\n${nextProgram.start} - ${nextProgram.description}`;
                 }
 
                 meta.description = description;
@@ -351,7 +355,7 @@ async function getMeta(url,type,id) {
             let logo = channelInfo.stream_icon || null;
 
             try {
-                const epgInfo = await handleChannelRequest(channelInfo.epg_channel_id, obj.baseURL, obj.username, obj.password);
+                const epgInfo = await handleChannelRequest(channelInfo.epg_channel_id, obj.baseURL, obj.username, obj.password, obj.timezone);
                 
                 if (epgInfo && epgInfo.currentProgram) {
                     let description = `Now: ${epgInfo.currentProgram.title}\n${epgInfo.currentProgram.start} - ${epgInfo.currentProgram.stop}\n${epgInfo.currentProgram.description || ''}\n\n`;

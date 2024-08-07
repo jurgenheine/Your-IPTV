@@ -1,31 +1,9 @@
 const axios = require('axios');
+const moment = require('moment-timezone');
 
-let cachedChannels = null;
-let cachedProgrammes = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 6 * 60 * 60 * 1000; // 6 hours
-
-function unixTimestampToGMT(timestamp) {
-  const year = timestamp.substr(0, 4);
-  const month = timestamp.substr(4, 2);
-  const day = timestamp.substr(6, 2);
-  const hour = timestamp.substr(8, 2);
-  const minute = timestamp.substr(10, 2);
-  const second = timestamp.substr(12, 2);
-  const offset = timestamp.substr(15);
-
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-
-  const offsetHours = parseInt(offset.substr(1, 2));
-  const offsetMinutes = parseInt(offset.substr(3, 2));
-  const offsetMilliseconds = (offsetHours * 60 + offsetMinutes) * 60 * 1000;
-  if (offset.startsWith('+')) {
-    date.setTime(date.getTime() - offsetMilliseconds);
-  } else {
-    date.setTime(date.getTime() + offsetMilliseconds);
-  }
-
-  return date.toUTCString();
+function unixTimestampToSpecifiedTimezone(timestamp, timezone) {
+  // The timestamp is already in UTC, so we just need to format it for the specified timezone
+  return moment(timestamp, 'YYYYMMDDHHmmss ZZ').tz(timezone).format('ddd, DD MMM YYYY HH:mm:ss z');
 }
 
 async function fetchAndProcessXMLTV(baseUrl, username, password) {
@@ -49,7 +27,7 @@ async function fetchAndProcessXMLTV(baseUrl, username, password) {
   }
 
   // Process channels
-  cachedChannels = getElements(xmlData, 'channel')
+  const channels = getElements(xmlData, 'channel')
     .map(channel => ({
       id: getAttribute(channel, 'id'),
       name: getTextContent(getElements(channel, 'display-name')[0] || ''),
@@ -58,7 +36,7 @@ async function fetchAndProcessXMLTV(baseUrl, username, password) {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // Process programmes
-  cachedProgrammes = getElements(xmlData, 'programme')
+  const programmes = getElements(xmlData, 'programme')
     .map(programme => ({
       channelId: getAttribute(programme, 'channel'),
       start: getAttribute(programme, 'start'),
@@ -68,38 +46,25 @@ async function fetchAndProcessXMLTV(baseUrl, username, password) {
     }))
     .sort((a, b) => a.start.localeCompare(b.start));
 
-  lastFetchTime = Date.now();
+  return { channels, programmes };
 }
 
-async function ensureDataIsFresh(baseUrl, username, password) {
-  const currentTime = Date.now();
-  if (!cachedChannels || !cachedProgrammes || currentTime - lastFetchTime > CACHE_DURATION) {
-    await fetchAndProcessXMLTV(baseUrl, username, password);
-  }
-}
-
-function getCurrentAndNextProgram(programmes) {
-  const now = new Date();
-  now.setHours(now.getHours() + 1); // Add 1 hour
-
-  const currentTimestamp = now.getUTCFullYear() +
-    (now.getUTCMonth() + 1).toString().padStart(2, '0') +
-    now.getUTCDate().toString().padStart(2, '0') +
-    now.getUTCHours().toString().padStart(2, '0') +
-    now.getUTCMinutes().toString().padStart(2, '0') +
-    now.getUTCSeconds().toString().padStart(2, '0') +
-    ' +0000';
+function getCurrentAndNextProgram(programmes, timezone) {
+  const now = moment().tz(timezone);
 
   let currentProgram = null;
   let nextProgram = null;
 
   for (let i = 0; i < programmes.length; i++) {
-    if (programmes[i].start <= currentTimestamp && programmes[i].stop > currentTimestamp) {
+    const programStart = moment(programmes[i].start, 'YYYYMMDDHHmmss ZZ');
+    const programStop = moment(programmes[i].stop, 'YYYYMMDDHHmmss ZZ');
+
+    if (programStart.isSameOrBefore(now) && programStop.isAfter(now)) {
       currentProgram = programmes[i];
       nextProgram = programmes[i + 1] || null;
       break;
     }
-    if (programmes[i].start > currentTimestamp) {
+    if (programStart.isAfter(now)) {
       nextProgram = programmes[i];
       break;
     }
@@ -108,29 +73,29 @@ function getCurrentAndNextProgram(programmes) {
   return { 
     currentProgram: currentProgram ? {
       ...currentProgram,
-      start: unixTimestampToGMT(currentProgram.start),
-      stop: unixTimestampToGMT(currentProgram.stop)
+      start: unixTimestampToSpecifiedTimezone(currentProgram.start, timezone),
+      stop: unixTimestampToSpecifiedTimezone(currentProgram.stop, timezone)
     } : null,
     nextProgram: nextProgram ? {
       ...nextProgram,
-      start: unixTimestampToGMT(nextProgram.start),
-      stop: unixTimestampToGMT(nextProgram.stop)
+      start: unixTimestampToSpecifiedTimezone(nextProgram.start, timezone),
+      stop: unixTimestampToSpecifiedTimezone(nextProgram.stop, timezone)
     } : null
   };
 }
 
-async function handleChannelRequest(epgChannelId, baseUrl, username, password) {
+async function handleChannelRequest(epgChannelId, baseUrl, username, password, timezone) {
   try {
-    await ensureDataIsFresh(baseUrl, username, password);
+    const { channels, programmes } = await fetchAndProcessXMLTV(baseUrl, username, password);
 
-    const channelInfo = cachedChannels.find(channel => channel.id === epgChannelId);
+    const channelInfo = channels.find(channel => channel.id === epgChannelId);
     if (!channelInfo) {
       return null;
     }
 
-    const channelProgrammes = cachedProgrammes.filter(programme => programme.channelId === epgChannelId);
+    const channelProgrammes = programmes.filter(programme => programme.channelId === epgChannelId);
 
-    const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes);
+    const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes, timezone);
 
     return {
       channel: channelInfo,
@@ -138,25 +103,26 @@ async function handleChannelRequest(epgChannelId, baseUrl, username, password) {
       nextProgram: nextProgram
     };
   } catch (error) {
+    console.error("Error in handleChannelRequest:", error);
     return null;
   }
 }
 
-async function handleMultiChannelRequest(channelIdsString, baseUrl, username, password) {
+async function handleMultiChannelRequest(channelIdsString, baseUrl, username, password, timezone) {
   try {
-    await ensureDataIsFresh(baseUrl, username, password);
+    const { channels, programmes } = await fetchAndProcessXMLTV(baseUrl, username, password);
 
     const channelIds = channelIdsString.split(',');
     const uniqueChannelIds = [...new Set(channelIds)]; // Remove duplicates
 
     const responseData = uniqueChannelIds.map(channelId => {
-      const channelInfo = cachedChannels.find(channel => channel.id === channelId);
+      const channelInfo = channels.find(channel => channel.id === channelId);
       if (!channelInfo) {
         return { channelId, error: 'Channel not found' };
       }
 
-      const channelProgrammes = cachedProgrammes.filter(programme => programme.channelId === channelId);
-      const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes);
+      const channelProgrammes = programmes.filter(programme => programme.channelId === channelId);
+      const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes, timezone);
 
       return {
         channel: channelInfo,
@@ -167,22 +133,24 @@ async function handleMultiChannelRequest(channelIdsString, baseUrl, username, pa
 
     return responseData;
   } catch (error) {
+    console.error("Error in handleMultiChannelRequest:", error);
     throw new Error('Error processing XMLTV data: ' + error.message);
   }
 }
 
 async function handleChannelsListRequest(baseUrl, username, password) {
   try {
-    await ensureDataIsFresh(baseUrl, username, password);
-    return cachedChannels;
+    const { channels } = await fetchAndProcessXMLTV(baseUrl, username, password);
+    return channels;
   } catch (error) {
+    console.error("Error in handleChannelsListRequest:", error);
     throw new Error('Error fetching channels list: ' + error.message);
   }
 }
 
-async function getEpgInfoBatch(channelIds, baseUrl, username, password) {
+async function getEpgInfoBatch(channelIds, baseUrl, username, password, timezone) {
   try {
-    await ensureDataIsFresh(baseUrl, username, password);
+    const { channels, programmes } = await fetchAndProcessXMLTV(baseUrl, username, password);
 
     const results = {};
     for (const channel of channelIds) {
@@ -190,13 +158,13 @@ async function getEpgInfoBatch(channelIds, baseUrl, username, password) {
         continue;
       }
 
-      const channelInfo = cachedChannels.find(c => c.id === channel.epg_channel_id);
+      const channelInfo = channels.find(c => c.id === channel.epg_channel_id);
       if (!channelInfo) {
         continue;
       }
 
-      const channelProgrammes = cachedProgrammes.filter(programme => programme.channelId === channel.epg_channel_id);
-      const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes);
+      const channelProgrammes = programmes.filter(programme => programme.channelId === channel.epg_channel_id);
+      const { currentProgram, nextProgram } = getCurrentAndNextProgram(channelProgrammes, timezone);
 
       results[channel.stream_id] = {
         channel: channelInfo,
@@ -207,6 +175,7 @@ async function getEpgInfoBatch(channelIds, baseUrl, username, password) {
 
     return results;
   } catch (error) {
+    console.error("Error in getEpgInfoBatch:", error);
     throw new Error('Error processing XMLTV data: ' + error.message);
   }
 }
