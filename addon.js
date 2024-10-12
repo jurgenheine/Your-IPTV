@@ -13,7 +13,7 @@ function getUserData(userConf) {
         return "error while parsing url"
     }
     
-    let domainName,baseURL,idPrefix
+    let domainName, baseURL, idPrefix
 
     if(typeof retrievedData === "object"){
         domainName = retrievedData.BaseURL.split("/")[2].split(":")[0] || "unknown"
@@ -29,7 +29,7 @@ function getUserData(userConf) {
             timezone: retrievedData.timezone || 'UTC'
         }
 
-    }else if(retrievedData.includes("http")){
+    } else if(retrievedData.includes("http")){
         url = retrievedData
         
         const queryString = url.split('?')[1] || "unknown"
@@ -115,10 +115,10 @@ async function getManifest(url) {
     
     const manifest = {
         id:`org.community.${obj.domainName}` || "org.community.youriptv",
-        version:"1.0.0",
+        version:"2.0.0",
         name:obj.domainName + " IPTV" || "Your IPTV",
         description:`You will access to your ${obj.domainName} IPTV with this addon!`,
-        idPrefixes:[obj.idPrefix],
+        idPrefixes:[obj.idPrefix, "tt"],
         catalogs:[
             {
                 id:`${obj.idPrefix}movie`,
@@ -218,7 +218,7 @@ async function getCatalog(url,type,genre) {
         try {
             epgInfo = await getEpgInfoBatch(channelIds, obj.baseURL, obj.username, obj.password, obj.timezone);
         } catch (error) {
-            // Error handling
+            console.error('Error fetching EPG info:', error);
         }
 
         getCatalogs.data.forEach(i => {
@@ -294,37 +294,45 @@ async function getMeta(url,type,id) {
     try {
         getMeta = await axios({url:`${obj.baseURL}/player_api.php`,params})
     } catch (error) {
+        console.error('Error fetching metadata:', error);
         return {}
     }
 
     let meta = {}
 
     if(type === "movie"|| type === "series"){
-        meta ={
+        if (!getMeta.data || !getMeta.data.info) {
+            console.error('Unexpected response structure:', getMeta.data);
+            return {};
+        }
+        meta = {
             id: obj.idPrefix + streamID || "",
             type,
-            name: getMeta.data.info.name === undefined ? "" : getMeta.data.info.name,
+            name: getMeta.data.info.name || "",
             poster: getMeta.data.info.cover_big || "",
-            background: getMeta.data.info.backdrop_path[0] || "https://www.stremio.com/website/wallpapers/stremio-wallpaper-5.jpg",
+            background: (getMeta.data.info.backdrop_path && getMeta.data.info.backdrop_path[0]) || "https://www.stremio.com/website/wallpapers/stremio-wallpaper-5.jpg",
             description: getMeta.data.info.description || "",
-            releaseInfo: String(getMeta.data && getMeta.data.info && (getMeta.data.info.releaseDate || getMeta.data.info.releasedate).split("-")[0])
+            releaseInfo: getMeta.data.info.releaseDate || getMeta.data.info.releasedate || ""
+        }
+        if (meta.releaseInfo) {
+            meta.releaseInfo = String(meta.releaseInfo.split("-")[0]);
         }
     }
        
     if(type === "series"){
         let videos = []
        
-        const seasons = Object.keys(getMeta.data.episodes)
+        const seasons = Object.keys(getMeta.data.episodes || {})
 
         seasons.forEach(season => {
-            getMeta.data.episodes[season].forEach(episode => {
+            (getMeta.data.episodes[season] || []).forEach(episode => {
                 let id = obj.idPrefix + episode.id || ""
                 let title = episode.title || ""
                 let season = episode.season || null
                 let episodeNo = episode.episode_num || null
                 let overview = episode.plot || ""
-                let thumbnail = episode.info.movie_image || null
-                let released = episode.info.releasedate === undefined ? Date.now() : new Date(episode.info.releasedate)
+                let thumbnail = episode.info?.movie_image || null
+                let released = episode.info?.releasedate ? new Date(episode.info.releasedate) : null
                 let container_extension = episode.container_extension || "mp4"
 
                 let streams = [{
@@ -337,11 +345,11 @@ async function getMeta(url,type,id) {
             });
         });
 
-        meta.name = getMeta.data.info.name || "",
+        meta.name = getMeta.data.info?.name || "",
         meta.videos = videos
 
     }else if(type === "movie"){
-        let imdbRating = getMeta.data.info.rating || ""
+        let imdbRating = getMeta.data.info?.rating || ""
         meta.imdbRating = imdbRating
         
     }else if(type === "tv"){
@@ -389,6 +397,7 @@ async function getMeta(url,type,id) {
                     });
                 }
             } catch (error) {
+                console.error('Error fetching EPG info:', error);
                 metaTV.push({ 
                     id, 
                     name, 
@@ -403,10 +412,10 @@ async function getMeta(url,type,id) {
             }
         }
 
-        return metaTV[0];
+        return metaTV[0] || {};
     }
 
     return meta
 }
 
-module.exports={getUserData,getManifest,getCatalog,getMeta}
+module.exports = {getUserData, getManifest, getCatalog, getMeta}

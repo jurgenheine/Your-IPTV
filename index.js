@@ -1,11 +1,11 @@
-
 const express = require("express");
 const app = express();
 const config = require('./config');
 const MANIFEST = require('./manifest');
 const { getManifest, getCatalog, getMeta, getUserData } = require("./addon");
+const { createXtreamModule } = require("./xtream-module");
 
-const NodeCache = require( "node-cache" );
+const NodeCache = require("node-cache");
 const myCache = new NodeCache({stdTTL:200});
 
 var respond = function (res, data) {
@@ -13,9 +13,7 @@ var respond = function (res, data) {
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Content-Type', 'application/json');
     res.send(data);
-  };
-  
-// app.use(express.static('public'))
+};
 
 app.engine('html', require('ejs').renderFile);
 app.set('views', __dirname);
@@ -27,7 +25,6 @@ app.get("/", function (req, res) {
 app.get("/:userConf?/configure", function (req, res) {
   const newManifest = { ...{MANIFEST} };
   res.render('configure.html',newManifest);
-  // res.render('configure.html',{MANIFEST});
 });
 
 app.get('/manifest.json', function (req, res) {
@@ -41,14 +38,12 @@ app.get('/:userConf/manifest.json', async function (req, res) {
   if (!((req || {}).params || {}).userConf) {
       newManifest.behaviorHints.configurationRequired = true;
       respond(res, newManifest);
-  }else {
+  } else {
     try {
-
       if (myCache.has(`manifest-${req.params.userConf}`)) {
         respond(res,myCache.get(`manifest-${req.params.userConf}`))
-      }else{
+      } else {
         newManifest = await getManifest(req.params.userConf)
-        // newManifest.behaviorHints.configurationRequired = false;
         if(newManifest && newManifest.id){
           myCache.set(`manifest-${req.params.userConf}`,newManifest)
         }
@@ -80,77 +75,88 @@ app.get('/:userConf/catalog/:type/:id/:extra?.json', async function (req, res) {
 
   let metas = []
   try {
-
     if (myCache.has(`catalog-${userConf}-${type}-${id}-${extra}`)) {
       respond(res,myCache.get(`catalog-${userConf}-${type}-${id}-${extra}`))
-    }else{
+    } else {
       metas = await getCatalog(userConf,type,extraObj.genre)
       if(metas.length > 0){
         myCache.set(`catalog-${userConf}-${type}-${id}-${extra}`,{metas: metas})
       }
       respond(res, {metas: metas})
     }
-
   } catch (error) {
     console.log(error)
     respond(res, {metas:[]})
-    
   }
-    
 });
 
 app.get('/:userConf/meta/:type/:id.json', async function (req,res){
-
   let {userConf,type,id} = req.params
 
   try {
     if (myCache.has(`meta-${userConf}-${type}-${id}`)) {
       respond(res,myCache.get(`meta-${userConf}-${type}-${id}`))
-    }else{
+    } else {
       const meta = await getMeta(userConf,type,id)
       if(meta && meta.id){
         myCache.set(`meta-${userConf}-${type}-${id}`,{meta:meta})
       }
       respond(res, {meta:meta})
     }
-
   } catch (error) {
     console.log(error)
     respond(res,{error})
   }
 });
 
+app.get('/:userConf/stream/:type/:id.json', async function (req, res) {
+  let {userConf, type, id} = req.params;
+  const obj = getUserData(userConf);
 
-app.get('/:userConf/stream/:type/:id.json', function (req, res) {
-
-  let {userConf,type,id} = req.params
-
-  let extension = "mp4"
-  const obj = getUserData(userConf)
-  const streamID = id.split(":")[1]
-  let stream = []
-  if(type === "tv"){
-    type = "live";
-    extension = "ts";
-    stream = [{
-      url: `${obj.baseURL}/${type}/${obj.username}/${obj.password}/${streamID}.${extension}`,
-      description:"Watch Now",
-      behaviorHints :{
-        notWebReady:true
+  if (id.startsWith('tt')) {
+    // Handle IMDb IDs using the Xtream module
+    const xtreamModule = createXtreamModule(obj.baseURL, obj.username, obj.password);
+    
+    try {
+      const xtreamResponse = await xtreamModule(id);
+      if (xtreamResponse && xtreamResponse.contentUrl) {
+        console.log('Stream URL for IMDb ID:', xtreamResponse.contentUrl);
+        respond(res, { streams: [{ url: xtreamResponse.contentUrl, name: xtreamResponse.title }] });
+      } else {
+        console.log('No stream found for IMDb ID:', id);
+        respond(res, { streams: [] });
       }
-    }]
-  }else{
-    stream = [{
-      url: `${obj.baseURL}/${type}/${obj.username}/${obj.password}/${streamID}.${extension}`,
-      description:"Watch Now"
-    }]
-  }
+    } catch (error) {
+      console.error('Xtream module error:', error);
+      respond(res, { streams: [] });
+    }
+  } else {
+    // Existing logic for non-IMDb IDs
+    let extension = "mp4";
+    const streamID = id.split(":")[1];
+    let stream = [];
+    if (type === "tv") {
+      type = "live";
+      extension = "ts";
+      const url = `${obj.baseURL}/${type}/${obj.username}/${obj.password}/${streamID}.${extension}`;
+      console.log('Stream URL for TV:', url);
+      stream = [{
+        url: url,
+        name: "Watch Now",
+        behaviorHints: {
+          notWebReady: true
+        }
+      }];
+    } else {
+      const url = `${obj.baseURL}/${type}/${obj.username}/${obj.password}/${streamID}.${extension}`;
+      console.log('Stream URL for VOD:', url);
+      stream = [{
+        url: url,
+        name: "Watch Now"
+      }];
+    }
 
-  try {
-    respond(res,{streams:stream})
-  } catch (error) {
-    console.log(error)
-    respond(res,{streams:[]})
+    respond(res, {streams: stream});
   }
 });
 
@@ -158,6 +164,6 @@ if (module.parent) {
   module.exports = app;
 } else {
   app.listen(config.port, function () {
-  console.log(config)
-});
+    console.log(config);
+  });
 }
