@@ -8,7 +8,7 @@ switch (env) {
     //Public server build.
     case 'beamup':
 		config.port = process.env.PORT
-        config.local = "5a0d1888fa64-your-iptv.baby-beamup.club"
+        config.local = "youriptv.fam-heine.nl"
         break;
 
     //Local sever build.
