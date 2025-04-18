@@ -15,7 +15,7 @@ var respond = function (res, data) {
     res.send(data);
 };
 
-app.set('trust proxy', 'loopback, linklocal, uniquelocal')
+app.set('trust proxy', true)
 app.engine('html', require('ejs').renderFile);
 app.set('views', __dirname);
 
